@@ -1,0 +1,30 @@
+# Android
+*.iml
+.gradle/
+build/
+/captures/
+.externalNativeBuild/
+.cxx/
+local.properties
+.DS_Store
+.idea/
+*.apk
+*.ap_*
+*.db
+*.jks
+*.keystore
+*.so
+*.log
+*.hprof
+*.orig
+*.pyc
+*.pyo
+*.tmp
+*.bak
+*.swp
+*.swo
+*.class
+# Kotlin
+*.kotlin_module
+# Firebase
+/google-services.json

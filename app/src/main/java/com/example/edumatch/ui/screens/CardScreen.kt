@@ -35,22 +35,84 @@ import androidx.compose.ui.zIndex
 import androidx.compose.ui.platform.LocalContext
 import coil.request.ImageRequest
 import coil.size.Size
+import coil.ImageLoader
+import com.google.firebase.storage.FirebaseStorage
+import kotlinx.coroutines.tasks.await
+import android.util.Log
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun FirebaseImage(photoRefOrUrl: String, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    var url by remember(photoRefOrUrl) { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(photoRefOrUrl) {
+        if (photoRefOrUrl.startsWith("http")) {
+            Log.d("FirebaseImage", "Используется downloadUrl: $photoRefOrUrl")
+            url = photoRefOrUrl
+        } else {
+            try {
+                val downloadUrl = FirebaseStorage.getInstance().reference.child(photoRefOrUrl).downloadUrl.await().toString()
+                Log.d("FirebaseImage", "Путь: $photoRefOrUrl, получен downloadUrl: $downloadUrl")
+                url = downloadUrl
+            } catch (e: Exception) {
+                Log.d("FirebaseImage", "Ошибка получения downloadUrl для пути: $photoRefOrUrl, ошибка: ${e.message}")
+                url = null
+            }
+        }
+    }
+
+    if (url != null) {
+        AsyncImage(
+            model = ImageRequest.Builder(context)
+                .data(url)
+                .crossfade(true)
+                .placeholder(R.drawable.ic_launcher_foreground)
+                .error(R.drawable.ic_launcher_foreground)
+                .size(Size.ORIGINAL)
+                .build(),
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = modifier
+        )
+    } else {
+        Box(
+            modifier = modifier.background(Color.Gray)
+        )
+    }
+}
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun TinderCard(
     user: User,
     modifier: Modifier = Modifier,
-    onSwipe: (Boolean) -> Unit = {}
+    offsetX: Float = 0f
 ) {
-    var offsetX by remember { mutableStateOf(0f) }
-    var offsetY by remember { mutableStateOf(0f) }
-    val rotation = (offsetX / 40).coerceIn(-20f, 20f)
-    
-    // Для фото
+    val context = LocalContext.current
     var currentPhotoIndex by remember { mutableStateOf(0) }
     val photos = user.photos
     val photoCount = photos.size
+
+    // Предзагрузка следующей фотки пользователя (если есть)
+    if (photoCount > 0 && currentPhotoIndex < photos.lastIndex) {
+        val nextPhotoUrl = photos[currentPhotoIndex + 1]
+        LaunchedEffect(nextPhotoUrl) {
+            val url = if (nextPhotoUrl.startsWith("http")) nextPhotoUrl else try {
+                FirebaseStorage.getInstance().reference.child(nextPhotoUrl).downloadUrl.await().toString()
+            } catch (e: Exception) { null }
+            if (url != null) {
+                Log.d("TinderCard", "Предзагрузка следующей фотки: $url")
+                val request = ImageRequest.Builder(context)
+                    .data(url)
+                    .size(Size.ORIGINAL)
+                    .build()
+                coil.Coil.imageLoader(context).enqueue(request)
+            } else {
+                Log.d("TinderCard", "Ошибка предзагрузки следующей фотки: $nextPhotoUrl")
+            }
+        }
+    }
     
     // Анимация для подсветки LIKE/NOPE
     val likeAlpha = ((offsetX / 120f).coerceIn(0f, 1f))
@@ -58,131 +120,71 @@ fun TinderCard(
     
     Box(
         modifier = modifier
-            .graphicsLayer(
-                translationX = offsetX,
-                translationY = offsetY,
-                rotationZ = rotation
-            )
-            .pointerInput(Unit) {
-                detectDragGestures(
-                    onDragEnd = {
-                        when {
-                            offsetX > 200 -> onSwipe(true)  // Like
-                            offsetX < -200 -> onSwipe(false) // Nope
-                            else -> {
-                                // Возврат в центр
-                                offsetX = 0f
-                                offsetY = 0f
-                            }
-                        }
-                    },
-                    onDrag = { change, dragAmount ->
-                        change.consume()
-                        offsetX += dragAmount.x
-                        offsetY += dragAmount.y
-                    }
-                )
-            }
     ) {
-        // Фото пользователя
-        val painter = rememberAsyncImagePainter(
-            model = photos[currentPhotoIndex],
-            placeholder = painterResource(R.drawable.ic_launcher_foreground),
-            error = painterResource(R.drawable.ic_launcher_foreground)
-        )
-        
-        Image(
-            painter = painter,
-            contentDescription = null,
-            modifier = Modifier.fillMaxSize(),
-            contentScale = ContentScale.Crop
-        )
+        if (photoCount > 0) {
+            // Фото пользователя с поддержкой downloadUrl и пути
+            FirebaseImage(
+                photoRefOrUrl = photos[currentPhotoIndex],
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(RoundedCornerShape(24.dp))
+            )
 
-        // Индикаторы фото (поверх изображения)
-        if (photoCount > 1) {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(top = 12.dp, start = 24.dp, end = 24.dp)
-                    .align(Alignment.TopCenter)
-                    .zIndex(2f),
-                horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally)
-            ) {
-                photos.forEachIndexed { idx, _ ->
+            // Индикаторы фото (поверх изображения)
+            if (photoCount > 1) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = 12.dp, start = 24.dp, end = 24.dp)
+                        .align(Alignment.TopCenter)
+                        .zIndex(2f),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally)
+                ) {
+                    photos.forEachIndexed { idx, _ ->
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(4.dp)
+                                .background(
+                                    color = if (idx == currentPhotoIndex) Color.White else Color.White.copy(alpha = 0.3f),
+                                    shape = RoundedCornerShape(2.dp)
+                                )
+                        )
+                    }
+                }
+            }
+            // Кликабельные боксы для переключения фото (поверх изображения)
+            if (photoCount > 1) {
+                Row(Modifier.fillMaxSize().zIndex(2f)) {
                     Box(
-                        modifier = Modifier
+                        Modifier
                             .weight(1f)
-                            .height(4.dp)
-                            .background(
-                                color = if (idx == currentPhotoIndex) Color.White else Color.White.copy(alpha = 0.3f),
-                                shape = RoundedCornerShape(2.dp)
-                            )
+                            .fillMaxHeight()
+                            .clickable(
+                                enabled = currentPhotoIndex > 0,
+                                indication = null,
+                                interactionSource = remember { MutableInteractionSource() }
+                            ) { currentPhotoIndex-- }
+                    )
+                    Box(
+                        Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .clickable(
+                                enabled = currentPhotoIndex < photos.lastIndex,
+                                indication = null,
+                                interactionSource = remember { MutableInteractionSource() }
+                            ) { currentPhotoIndex++ }
                     )
                 }
             }
-        }
-        // Кликабельные боксы для переключения фото (поверх изображения)
-        if (photoCount > 1) {
-            Row(Modifier.fillMaxSize().zIndex(2f)) {
-                Box(
-                    Modifier
-                        .weight(1f)
-                        .fillMaxHeight()
-                        .clickable(
-                            enabled = currentPhotoIndex > 0,
-                            indication = null,
-                            interactionSource = remember { MutableInteractionSource() }
-                        ) { currentPhotoIndex-- }
-                )
-                Box(
-                    Modifier
-                        .weight(1f)
-                        .fillMaxHeight()
-                        .clickable(
-                            enabled = currentPhotoIndex < photos.lastIndex,
-                            indication = null,
-                            interactionSource = remember { MutableInteractionSource() }
-                        ) { currentPhotoIndex++ }
-                )
-            }
-        }
-
-        // Подсветка свайпа
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(
-                    when {
-                        offsetX > 0 -> Color(0x8032CD32).copy(alpha = (offsetX / 300f).coerceIn(0f, 0.5f))
-                        offsetX < 0 -> Color(0x80FF0000).copy(alpha = (-offsetX / 300f).coerceIn(0f, 0.5f))
-                        else -> Color.Transparent
-                    }
-                )
-        )
-
-        // Надписи LIKE/NOPE
-        if (likeAlpha > 0.01f) {
-            Text(
-                text = "LIKE",
-                color = Color(0xFF4CAF50),
-                fontSize = 48.sp,
-                fontWeight = FontWeight.Bold,
+        } else {
+            // Заглушка, если фото нет
+            Box(
                 modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(24.dp)
-                    .graphicsLayer(alpha = likeAlpha, rotationZ = -15f)
-            )
-        }
-        if (nopeAlpha > 0.01f) {
-            Text(
-                text = "NOPE",
-                color = Color(0xFFFF1744),
-                fontSize = 48.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(24.dp)
-                    .graphicsLayer(alpha = nopeAlpha, rotationZ = 15f)
+                    .fillMaxSize()
+                    .clip(RoundedCornerShape(24.dp))
+                    .background(Color.Gray)
             )
         }
 
@@ -251,21 +253,92 @@ fun TinderCard(
             }
             Spacer(Modifier.height(32.dp)) // дополнительный отступ между контентом и кнопками
         }
+
+        // Подсветка свайпа
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(
+                    when {
+                        offsetX > 0 -> Color(0x8032CD32).copy(alpha = (offsetX / 300f).coerceIn(0f, 0.5f))
+                        offsetX < 0 -> Color(0x80FF0000).copy(alpha = (-offsetX / 300f).coerceIn(0f, 0.5f))
+                        else -> Color.Transparent
+                    }
+                )
+        )
+        // Надписи LIKE/NOPE
+        if (likeAlpha > 0.01f) {
+            Text(
+                text = "LIKE",
+                color = Color(0xFF4CAF50),
+                fontSize = 48.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(24.dp)
+                    .graphicsLayer(alpha = likeAlpha, rotationZ = -15f)
+            )
+        }
+        if (nopeAlpha > 0.01f) {
+            Text(
+                text = "NOPE",
+                color = Color(0xFFFF1744),
+                fontSize = 48.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(24.dp)
+                    .graphicsLayer(alpha = nopeAlpha, rotationZ = 15f)
+            )
+        }
     }
 }
 
 @Composable
 fun CardScreen(
     users: List<User>,
+    currentUserId: String,
+    likedUserIds: Set<String>,
+    dislikedUserIds: Set<String>,
     onLike: (User) -> Unit = {},
     onDislike: (User) -> Unit = {},
     onMessage: (User) -> Unit = {},
     onReturn: () -> Unit = {}
 ) {
+    // Фильтруем только чужие и не лайкнутые/не дизлайкнутые карточки
+    val filteredUsers = users.filter { user ->
+        user.id != currentUserId &&
+        user.id !in likedUserIds &&
+        user.id !in dislikedUserIds &&
+        user.photos.isNotEmpty()
+    }
     var currentIndex by remember { mutableStateOf(0) }
-    val visibleUsers = users.drop(currentIndex)
+    val visibleUsers = filteredUsers.drop(currentIndex)
     val topUser = visibleUsers.firstOrNull()
     val nextUser = visibleUsers.getOrNull(1)
+
+    // Состояния для смещения верхней карточки
+    var offsetX by remember { mutableStateOf(0f) }
+    var offsetY by remember { mutableStateOf(0f) }
+    var isSwiped by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val animatedOffsetX by animateFloatAsState(
+        targetValue = if (isSwiped) {
+            if (offsetX > 0) 1000f else -1000f
+        } else offsetX,
+        animationSpec = tween(durationMillis = 0),
+        finishedListener = {
+            if (isSwiped) {
+                if (offsetX > 0) onLike(topUser!!)
+                else onDislike(topUser!!)
+                currentIndex++
+                offsetX = 0f
+                offsetY = 0f
+                isSwiped = false
+            }
+        }
+    )
+    val displayOffsetX = if (isSwiped) animatedOffsetX else offsetX
 
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         // Следующая карточка
@@ -276,8 +349,8 @@ fun CardScreen(
                     .fillMaxSize()
                     .padding(horizontal = 16.dp)
                     .shadow(8.dp, RoundedCornerShape(24.dp))
-                    .clip(RoundedCornerShape(24.dp))
-                    .offset(y = 24.dp)
+                    .clip(RoundedCornerShape(24.dp)),
+                offsetX = 0f
             )
         }
 
@@ -289,11 +362,32 @@ fun CardScreen(
                     .fillMaxSize()
                     .padding(horizontal = 16.dp)
                     .shadow(16.dp, RoundedCornerShape(24.dp))
-                    .clip(RoundedCornerShape(24.dp)),
-                onSwipe = { isLike ->
-                    if (isLike) onLike(topUser) else onDislike(topUser)
-                    currentIndex++
-                }
+                    .clip(RoundedCornerShape(24.dp))
+                    .graphicsLayer(
+                        translationX = displayOffsetX,
+                        translationY = offsetY,
+                        rotationZ = (displayOffsetX / 40).coerceIn(-20f, 20f)
+                    )
+                    .pointerInput(currentIndex) {
+                        detectDragGestures(
+                            onDragEnd = {
+                                when {
+                                    offsetX > 200 -> isSwiped = true
+                                    offsetX < -200 -> isSwiped = true
+                                    else -> {
+                                        offsetX = 0f
+                                        offsetY = 0f
+                                    }
+                                }
+                            },
+                            onDrag = { change, dragAmount ->
+                                change.consume()
+                                offsetX += dragAmount.x
+                                offsetY += dragAmount.y
+                            }
+                        )
+                    },
+                offsetX = displayOffsetX
             )
         }
     }
